@@ -7,7 +7,7 @@ import ObjToCSV from 'objects-to-csv';
 
 dotenv.config();
 
-const apiKey = process.env.API_KEY;
+let apiKey = process.env.API_KEY;
 const tagsUrl = 'https://content.guardianapis.com/tags';
 
 async function getContent(apiUrl, startDate, page) {
@@ -27,39 +27,51 @@ async function getContent(apiUrl, startDate, page) {
 
   return data.response;
 }
-
+let dataLength = 0;
 async function getContents(apiUrl, startDate, path) {
   const results = [];
   try {
     let page = 0;
     let totalPage = 0;
     const data = await getContent(apiUrl, startDate, ++page);
-    results.push(...(data.results || []));
+    results.push(
+      ...data.results.map((item) => ({
+        id: item.id,
+        publicationDate: item.webPublicationDate,
+        title: item.fields.headline,
+        author: item.fields.byline,
+        content: item.fields.bodyText,
+        url: item.fields.shortUrl,
+        section: item.sectionId,
+      }))
+    );
     totalPage = data.pages;
-    const promises = [];
-    while (page < totalPage) {
-      promises.push(getContent(apiUrl, startDate, ++page));
-    }
 
-    const list = await Promise.all(promises);
-    for (const item of list) {
-      results.push(...(item.results || []));
-    }
-    const dataList = results.map((item) => ({
-      id: item.id,
-      publicationDate: item.webPublicationDate,
-      title: item.fields.headline,
-      author: item.fields.byline,
-      content: item.fields.bodyText,
-      url: item.fields.shortUrl,
-      section: item.sectionId,
-    }));
-    const csv = new ObjToCSV(dataList);
-    await csv.toDisk(path, {
-      append: true,
-    });
-    console.log(`--- finish ${apiUrl} ---`);
-    return dataList.length;
+    let timerId = setInterval(async () => {
+      if (page >= totalPage) {
+        const csv = new ObjToCSV(results);
+        await csv.toDisk(path, {
+          append: true,
+        });
+        console.log(`--- finish ${apiUrl} ---`);
+        dataLength += results.length;
+        clearInterval(timerId);
+        timerId = 0;
+        return;
+      }
+      const itemData = await getContent(apiUrl, startDate, ++page);
+      results.push(
+        ...itemData.results.map((item) => ({
+          id: item.id,
+          publicationDate: item.webPublicationDate,
+          title: item.fields.headline,
+          author: item.fields.byline,
+          content: item.fields.bodyText,
+          url: item.fields.shortUrl,
+          section: item.sectionId,
+        }))
+      );
+    }, 500);
   } catch (error) {
     console.log(error.message);
   }
@@ -73,6 +85,7 @@ async function getSection(sectionName, page) {
       section: sectionName,
       'api-key': apiKey,
       page,
+      'page-size': 100,
     },
   });
 
@@ -90,6 +103,7 @@ async function getSections(sectionName) {
     const data = await getSection(sectionName, ++page);
     totalPage = data.pages;
     result.push(...data.results);
+    console.log(`--- total ${data.total} urls ---`);
     const promises = [];
     while (page < totalPage) {
       promises.push(getSection(sectionName, ++page));
@@ -129,6 +143,7 @@ async function getSections(sectionName) {
     console.log('--- start crawling ---');
     const sectionList = await getSections(options.section);
     if (!sectionList) {
+      console.log('--- finish ---');
       return;
     }
     const promises = [];
@@ -138,15 +153,11 @@ async function getSections(sectionName) {
       promises.push(getContents(url, date, path));
     }
     try {
-      const lengthList = await Promise.all(promises);
-      let count = 0;
-      for (const item of lengthList) {
-        if (!item) continue;
-        count += item;
-      }
-      console.log(`--- finish ${count} data ---`);
+      await Promise.all(promises);
+      console.log(`-- finish ${dataLength} data`);
     } catch (error) {
       console.log(error.message);
+      console.log('--- finish ---');
     }
   } else {
     console.log('No tagName or startDate specified');
